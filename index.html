@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MemeBattle ⚔️</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header class="site-header">
+    <div class="logo">MEME<span>BATTLE</span></div>
+    <div class="header-sub">⚔️ Vote. Rank. Destroy.</div>
+  </header>
+
+  <!-- SCOREBOARD TICKER (top bar) -->
+  <div class="ticker-wrap">
+    <div class="ticker" id="ticker">Loading rankings...</div>
+  </div>
+
+  <!-- MAIN BATTLE ARENA -->
+  <main class="arena" id="arena">
+
+    <div class="vs-label">VS</div>
+
+    <!-- LEFT MEME -->
+    <div class="meme-card" id="cardA" onclick="vote('A')">
+      <div class="meme-img-wrap">
+        <img id="imgA" src="" alt="Meme A" />
+        <div class="vote-overlay">👈 THIS ONE</div>
+      </div>
+      <div class="meme-score" id="scoreA">ELO: —</div>
+    </div>
+
+    <!-- RIGHT MEME -->
+    <div class="meme-card" id="cardB" onclick="vote('B')">
+      <div class="meme-img-wrap">
+        <img id="imgB" src="" alt="Meme B" />
+        <div class="vote-overlay">THIS ONE 👉</div>
+      </div>
+      <div class="meme-score" id="scoreB">ELO: —</div>
+    </div>
+
+  </main>
+
+  <!-- SKIP BUTTON -->
+  <div class="controls">
+    <button class="btn-skip" onclick="loadNextBattle()">Skip ⏭</button>
+  </div>
+
+  <!-- LEADERBOARD SECTION -->
+  <section class="leaderboard-section">
+    <h2 class="section-title">🏆 Hall of Fame</h2>
+    <div class="leaderboard" id="leaderboard">
+      <p class="loading-text">Loading rankings...</p>
+    </div>
+  </section>
+
+  <!-- UPLOAD SECTION -->
+  <section class="upload-section">
+    <h2 class="section-title">📤 Submit a Meme</h2>
+    <div class="upload-box" id="uploadBox">
+      <input type="file" id="fileInput" accept="image/*" hidden />
+      <button class="btn-upload" onclick="document.getElementById('fileInput').click()">
+        Choose Image
+      </button>
+      <span id="fileName">No file chosen</span>
+      <button class="btn-submit" id="submitBtn" onclick="uploadMeme()" disabled>
+        Upload to Battle
+      </button>
+    </div>
+    <p class="upload-hint">Accepted: JPG, PNG, GIF, WebP · Max 5MB</p>
+  </section>
+
+  <!-- RESULT TOAST -->
+  <div class="toast" id="toast"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>
