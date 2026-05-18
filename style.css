@@ -409,7 +409,16 @@ body::before {
       "right right right";
     grid-template-columns: 1fr;
     gap: 1rem;
-    padding: 2rem 1rem;
+    padding: 1.5rem 1rem;
   }
-  .vs-label { font-size: 2.5rem; }
+
+  .vs-label {
+    font-size: 2rem;
+    text-align: center;
+    padding: 0.5rem 0;
+  }
+
+  #cardA, #cardB {
+    width: 100%;
+  }
 }
