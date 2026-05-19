@@ -1,129 +1,166 @@
 // =========================================
 // MEMEBATTLE — script.js
-// Source 1: meme-api.com (clean curated memes)
-// Source 2: Reddit strict (i.redd.it only, no galleries)
-// Source 3: imgflip (classic meme templates)
-// ELO: localStorage
+// ELO: Firebase Firestore (shared, live, global)
+// Memes: meme-api.com → Reddit → imgflip
 // =========================================
 
-const K = 32;
-const MEME_API_URL = 'https://meme-api.com/gimme/dankmemes/20';
+import { initializeApp }                          from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getFirestore, doc, getDoc, setDoc,
+         onSnapshot, collection,
+         query, orderBy, limit }                  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
+// ---- FIREBASE CONFIG ----
+const firebaseConfig = {
+  apiKey:            "AIzaSyD3FvhhmqEfHUQyEBWLTBHE5cxps-9xsq8",
+  authDomain:        "memebattle-4eb0b.firebaseapp.com",
+  projectId:         "memebattle-4eb0b",
+  storageBucket:     "memebattle-4eb0b.firebasestorage.app",
+  messagingSenderId: "118859306572",
+  appId:             "1:118859306572:web:95a71d09702c5c934c46e9"
+};
+
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ---- CONFIG ----
+const K = 32;
+
+// ---- STATE ----
 let memePool   = [];
-let eloStore   = {};
 let currentA   = null;
 let currentB   = null;
 let isFetching = false;
 
-// ---- LOCALSTORAGE ----
-function loadEloStore() {
+// ---- FIRESTORE HELPERS ----
+// Each meme stored as: memes/{urlHash} = { name, elo, url, votes }
+// We use a simple hash of the URL as the document ID
+
+function hashUrl(url) {
+  // Simple hash — turns URL into a safe Firestore document ID
+  let hash = 0;
+  for (let i = 0; i < url.length; i++) {
+    const char = url.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+async function getEloFromDB(meme) {
   try {
-    const s = localStorage.getItem('memebattle_elo');
-    if (s) eloStore = JSON.parse(s);
-  } catch(e) { eloStore = {}; }
+    const ref  = doc(db, 'memes', hashUrl(meme.url));
+    const snap = await getDoc(ref);
+    if (snap.exists()) return snap.data().elo;
+    // First time seeing this meme — create it
+    await setDoc(ref, { url: meme.url, name: meme.name, elo: 1200, votes: 0 });
+    return 1200;
+  } catch(e) {
+    console.warn('Firestore read failed, using 1200:', e);
+    return 1200;
+  }
 }
 
-function saveEloStore() {
-  try { localStorage.setItem('memebattle_elo', JSON.stringify(eloStore)); }
-  catch(e) {}
+async function updateEloInDB(winner, loser) {
+  const eW = expectedScore(winner.elo, loser.elo);
+  const eL = expectedScore(loser.elo,  winner.elo);
+
+  const newWinnerElo = Math.round(winner.elo + K * (1 - eW));
+  const newLoserElo  = Math.round(loser.elo  + K * (0 - eL));
+
+  try {
+    // Update winner
+    await setDoc(doc(db, 'memes', hashUrl(winner.url)), {
+      url: winner.url, name: winner.name,
+      elo: newWinnerElo,
+      votes: (winner.votes || 0) + 1
+    });
+    // Update loser
+    await setDoc(doc(db, 'memes', hashUrl(loser.url)), {
+      url: loser.url, name: loser.name,
+      elo: newLoserElo,
+      votes: (loser.votes || 0) + 1
+    });
+  } catch(e) {
+    console.error('Firestore write failed:', e);
+  }
+
+  return { newWinnerElo, newLoserElo };
 }
 
-function getElo(meme) {
-  if (!eloStore[meme.url]) eloStore[meme.url] = { name: meme.name, elo: 1200 };
-  return eloStore[meme.url].elo;
+// ---- LIVE LEADERBOARD (updates for ALL users in real time) ----
+function startLiveLeaderboard() {
+  const q = query(
+    collection(db, 'memes'),
+    orderBy('elo', 'desc'),
+    limit(5)
+  );
+
+  // onSnapshot fires every time Firestore data changes
+  onSnapshot(q, (snapshot) => {
+    const entries = snapshot.docs.map(d => d.data());
+    renderLeaderboard(entries);
+    updateTicker(entries);
+  }, (err) => {
+    console.warn('Leaderboard snapshot failed:', err);
+  });
 }
 
-function setElo(meme, val) {
-  if (!eloStore[meme.url]) eloStore[meme.url] = { name: meme.name, elo: val };
-  else eloStore[meme.url].elo = val;
-}
+// ---- ELO MATH ----
+function expectedScore(a, b) { return 1 / (1 + Math.pow(10, (b - a) / 400)); }
 
-// ---- SOURCE 1: meme-api.com (best quality) ----
+// ---- MEME SOURCES ----
 async function fetchFromMemeApi() {
-  // Rotate between funny subreddits for variety
-  const subs = ['dankmemes', 'memes', 'me_irl', 'AdviceAnimals', 'comedyheaven'];
+  const subs = ['dankmemes','memes','me_irl','AdviceAnimals','comedyheaven'];
   const sub  = subs[Math.floor(Math.random() * subs.length)];
   const res  = await fetch(`https://meme-api.com/gimme/${sub}/20`);
-  if (!res.ok) throw new Error(`meme-api error ${res.status}`);
+  if (!res.ok) throw new Error('meme-api failed');
   const data = await res.json();
-
   return (data.memes || [])
-    .filter(m =>
-      !m.nsfw &&
-      !m.spoiler &&
-      m.url &&
-      /\.(jpg|jpeg|png|gif|webp)$/i.test(m.url)
-    )
+    .filter(m => !m.nsfw && !m.spoiler && m.url && /\.(jpg|jpeg|png|gif|webp)$/i.test(m.url))
     .map(m => ({ url: m.url, name: m.title }));
 }
 
-// ---- SOURCE 2: Reddit direct (strict — only i.redd.it images) ----
 async function fetchFromReddit() {
-  const subs = ['memes', 'dankmemes', 'me_irl', 'AdviceAnimals'];
+  const subs = ['memes','dankmemes','me_irl','AdviceAnimals'];
   const sub  = subs[Math.floor(Math.random() * subs.length)];
   const res  = await fetch(`https://www.reddit.com/r/${sub}/hot.json?limit=50&raw_json=1`);
-  if (!res.ok) throw new Error('Reddit error');
+  if (!res.ok) throw new Error('Reddit failed');
   const data = await res.json();
-
   return (data?.data?.children || [])
     .map(p => p.data)
     .filter(p =>
-      !p.over_18 &&
-      !p.spoiler &&
-      !p.is_gallery &&              // exclude multi-image albums
-      p.post_hint === 'image' &&    // must be a direct image post
-      p.url &&
-      p.url.startsWith('https://i.redd.it/') && // only Reddit-hosted images
+      !p.over_18 && !p.spoiler && !p.is_gallery &&
+      p.post_hint === 'image' &&
+      p.url?.startsWith('https://i.redd.it/') &&
       /\.(jpg|jpeg|png|gif|webp)$/i.test(p.url)
     )
     .map(p => ({ url: p.url, name: p.title }));
 }
 
-// ---- SOURCE 3: imgflip (fallback classics) ----
 async function fetchFromImgflip() {
   const res  = await fetch('https://api.imgflip.com/get_memes');
-  if (!res.ok) throw new Error('imgflip error');
+  if (!res.ok) throw new Error('imgflip failed');
   const data = await res.json();
   return (data?.data?.memes || []).map(m => ({ url: m.url, name: m.name }));
 }
 
-// ---- MAIN FETCH: try sources in order ----
 async function fetchMoreMemes() {
   if (isFetching) return;
   isFetching = true;
-
   try {
-    // Try meme-api first (best quality)
     const fresh = await fetchFromMemeApi();
-    if (fresh.length > 0) {
-      memePool.push(...fresh);
-      isFetching = false;
-      return;
-    }
-    throw new Error('meme-api returned empty');
-  } catch(e) {
-    console.warn('meme-api failed, trying Reddit...', e.message);
-  }
-
+    if (fresh.length > 0) { memePool.push(...fresh); return; }
+    throw new Error('empty');
+  } catch(e) { console.warn('meme-api failed, trying Reddit...'); }
   try {
-    // Try Reddit strict
     const fresh = await fetchFromReddit();
-    if (fresh.length > 0) {
-      memePool.push(...fresh);
-      isFetching = false;
-      return;
-    }
-    throw new Error('Reddit returned empty');
-  } catch(e) {
-    console.warn('Reddit failed, trying imgflip...', e.message);
-  }
-
+    if (fresh.length > 0) { memePool.push(...fresh); return; }
+    throw new Error('empty');
+  } catch(e) { console.warn('Reddit failed, trying imgflip...'); }
   try {
-    // Last resort: imgflip
     const fresh = await fetchFromImgflip();
     memePool.push(...fresh);
   } catch(e) {
-    console.error('All sources failed:', e.message);
     showToast('Could not load memes. Check your internet.');
   } finally {
     isFetching = false;
@@ -132,7 +169,12 @@ async function fetchMoreMemes() {
 
 async function getNextMeme() {
   if (memePool.length < 5) await fetchMoreMemes();
-  return memePool.shift() || null;
+  const meme = memePool.shift();
+  if (!meme) return null;
+  // Fetch its current ELO from Firestore
+  meme.elo   = await getEloFromDB(meme);
+  meme.votes = 0;
+  return meme;
 }
 
 // ---- LOAD BATTLE ----
@@ -179,28 +221,13 @@ function setMemeCard(side, meme) {
     img.style.transition = 'opacity 0.3s ease';
     img.style.opacity = '1';
   };
-  tmp.onerror = () => {
-    console.warn('Image load failed, skipping:', meme.url);
-    loadNextBattle();
-  };
+  tmp.onerror = () => { console.warn('Image failed:', meme.url); loadNextBattle(); };
   tmp.src = meme.url;
-  score.textContent = `ELO: ${getElo(meme)}`;
-}
-
-// ---- ELO ----
-function expectedScore(a, b) { return 1 / (1 + Math.pow(10, (b - a) / 400)); }
-
-function updateElo(winner, loser) {
-  const nW = Math.round(getElo(winner) + K * (1 - expectedScore(getElo(winner), getElo(loser))));
-  const nL = Math.round(getElo(loser)  + K * (0 - expectedScore(getElo(loser),  getElo(winner))));
-  setElo(winner, nW);
-  setElo(loser,  nL);
-  saveEloStore();
-  return nW;
+  score.textContent = `ELO: ${meme.elo}`;
 }
 
 // ---- VOTE ----
-function vote(side) {
+async function vote(side) {
   if (!currentA || !currentB) return;
 
   const cardA = document.getElementById('cardA');
@@ -213,83 +240,82 @@ function vote(side) {
   const winnerCard = side === 'A' ? cardA    : cardB;
   const loserCard  = side === 'A' ? cardB    : cardA;
 
-  const newElo = updateElo(winner, loser);
   winnerCard.classList.add('winner');
   loserCard.classList.add('loser');
 
-  document.getElementById('scoreA').textContent = `ELO: ${getElo(currentA)}`;
-  document.getElementById('scoreB').textContent = `ELO: ${getElo(currentB)}`;
+  // Write to Firestore — updates leaderboard for ALL users
+  const { newWinnerElo } = await updateEloInDB(winner, loser);
 
-  renderLeaderboard();
-  updateTicker();
-  showToast(`${winner.name.slice(0,28)} wins! 🔥 (${newElo} ELO)`);
+  document.getElementById('scoreA').textContent = `ELO: ${side === 'A' ? newWinnerElo : loser.elo}`;
+  document.getElementById('scoreB').textContent = `ELO: ${side === 'B' ? newWinnerElo : loser.elo}`;
+
+  showToast(`${winner.name.slice(0,28)} wins! 🔥 (${newWinnerElo} ELO)`);
   setTimeout(loadNextBattle, 1500);
 }
 
-// ---- LEADERBOARD ----
-function renderLeaderboard() {
+// ---- LEADERBOARD (rendered from Firestore live data) ----
+function renderLeaderboard(entries) {
   const container = document.getElementById('leaderboard');
-  const entries = Object.entries(eloStore)
-    .map(([url, d]) => ({ url, ...d }))
-    .sort((a, b) => b.elo - a.elo)
-    .slice(0, 5);
 
-  if (!entries.length) {
-    container.innerHTML = '<p class="loading-text">Vote on some memes to build the leaderboard!</p>';
+  if (!entries || entries.length === 0) {
+    container.innerHTML = '<p class="loading-text">> vote on some memes to build the leaderboard_</p>';
     return;
   }
 
   const medals = ['🥇','🥈','🥉','4','5'];
   container.innerHTML = entries.map((m, i) => `
     <div class="lb-item">
-      <div class="lb-rank">${medals[i]}</div>
+      <div class="lb-rank">${medals[i] || i+1}</div>
       <img class="lb-thumb" src="${m.url}" alt="${m.name}"
-           onerror="this.src='https://placehold.co/54x54/1a1a1a/666?text=?'"/>
+           onerror="this.src='https://placehold.co/54x54/0e0e1a/555577?text=?'"/>
       <div class="lb-info">
         <div class="lb-name">${m.name.slice(0,40)}${m.name.length>40?'…':''}</div>
+        <div class="lb-votes">${m.votes || 0} votes</div>
       </div>
       <div class="lb-elo">${m.elo}</div>
     </div>`).join('');
 }
 
 // ---- TICKER ----
-function updateTicker() {
-  const entries = Object.entries(eloStore)
-    .map(([url, d]) => ({ url, ...d }))
-    .sort((a,b) => b.elo - a.elo)
-    .slice(0,8);
-
-  document.getElementById('ticker').textContent = entries.length
-    ? `⚔️  ${entries.map((m,i)=>`#${i+1} ${m.name.slice(0,22)} (${m.elo})`).join('  ·  ')}  ⚔️`
-    : '⚔️ MEMEBATTLE — Vote to build the rankings!';
+function updateTicker(entries) {
+  if (!entries || entries.length === 0) {
+    document.getElementById('ticker').textContent = '>_ MEMEBATTLE — vote to initialize the global rankings_';
+    return;
+  }
+  const text = entries.map((m,i) => `#${i+1} ${m.name.slice(0,22)} (${m.elo})`).join('  ·  ');
+  document.getElementById('ticker').textContent = `>_  ${text}  <`;
 }
 
 // ---- UPLOAD ----
 document.getElementById('fileInput').addEventListener('change', function() {
   const file = this.files[0];
-  document.getElementById('fileName').textContent = file ? file.name : 'No file chosen';
+  document.getElementById('fileName').textContent = file ? file.name : 'no file selected_';
   document.getElementById('submitBtn').disabled = !file || file.size > 5*1024*1024;
   if (file && file.size > 5*1024*1024) showToast('File too large! Max 5MB.');
 });
 
-function uploadMeme() {
+async function uploadMeme() {
   const file = document.getElementById('fileInput').files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async (e) => {
     const name = file.name.replace(/\.[^/.]+$/,'');
     const url  = e.target.result;
-    eloStore[url] = { name, elo: 1200 };
-    saveEloStore();
-    memePool.unshift({ url, name });
-    renderLeaderboard(); updateTicker();
+    // Add to Firestore
+    await setDoc(doc(db, 'memes', hashUrl(url)), { url, name, elo: 1200, votes: 0 });
+    memePool.unshift({ url, name, elo: 1200, votes: 0 });
     showToast('Your meme entered the arena! 🎉');
     document.getElementById('fileInput').value = '';
-    document.getElementById('fileName').textContent = 'No file chosen';
+    document.getElementById('fileName').textContent = 'no file selected_';
     document.getElementById('submitBtn').disabled = true;
   };
   reader.readAsDataURL(file);
 }
+
+// expose to HTML onclick
+window.vote       = vote;
+window.uploadMeme = uploadMeme;
+window.loadNextBattle = loadNextBattle;
 
 // ---- TOAST ----
 let toastTimer;
@@ -303,9 +329,7 @@ function showToast(msg) {
 
 // ---- INIT ----
 async function init() {
-  loadEloStore();
-  renderLeaderboard();
-  updateTicker();
+  startLiveLeaderboard(); // starts listening to Firestore in real time
   await fetchMoreMemes();
   loadNextBattle();
 }
